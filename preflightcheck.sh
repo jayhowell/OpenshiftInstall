@@ -45,7 +45,7 @@ check_dns() {
     ip=$(dig +short "${host}" | tail -n1)
     echo "OK (${ip})"
   else
-    echo "FAILED"
+    echo "FAILED DNS check for ${host}"
   fi
 }
 
@@ -56,7 +56,7 @@ check_port() {
   if [ $? -eq 0 ]; then
     echo "  [PORT ${port}] OPEN"
   else
-    echo "  [PORT ${port}] CLOSED or FILTERED"
+    echo "  [PORT ${port}] for ${host} CLOSED or FILTERED"
   fi
 }
 
