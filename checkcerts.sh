@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# check_redhat_cert_issuer.sh
-# Verify that Red Hat and Quay endpoints present a certificate issued by Amazon, not Forcepoint
+# check_redhat_cert_issuer_multi.sh
+# Verify that Red Hat and Quay endpoints present certificates issued by known trusted CAs
+# Detects rewritten certs (e.g., Forcepoint)
 #
-# Usage: ./check_redhat_cert_issuer.sh
+# Usage: ./check_redhat_cert_issuer_multi.sh
 #
 
 HOSTS=(
@@ -25,9 +26,20 @@ HOSTS=(
   "console.redhat.com"
 )
 
-# Expected issuer keyword
-EXPECTED="Amazon"
-BAD_ISSUER="Forcepoint"
+# List of expected issuers (patterns are matched case-insensitively)
+ALLOWED_ISSUERS=(
+  "Amazon"
+  "DigiCert Global G3 TLS ECC SHA384 2020 CA1"
+  "DigiCert TLS RSA SHA256 2020 CA1"
+  "Red Hat Entitlement Operations Authority"
+  "GeoTrust TLS RSA CA G1"
+  "R12"
+)
+
+# Known bad issuers (proxies, interceptors, etc.)
+BAD_ISSUERS=(
+  "Forcepoint"
+)
 
 # Colors
 GREEN="\033[1;32m"
@@ -52,14 +64,33 @@ for host in "${HOSTS[@]}"; do
   # Extract issuer CN
   issuer=$(echo "$output" | grep "issuer=" | head -1 | sed 's/.*CN=//')
 
-  if echo "$issuer" | grep -qi "$BAD_ISSUER"; then
-    echo -e "  ${RED}⚠️  CERT REWRITTEN by Forcepoint!${NC}"
+  matched_good=false
+  matched_bad=false
+
+  for bad in "${BAD_ISSUERS[@]}"; do
+    if echo "$issuer" | grep -qi "$bad"; then
+      matched_bad=true
+      break
+    fi
+  done
+
+  if [ "$matched_bad" = true ]; then
+    echo -e "  ${RED}⚠️  CERT REWRITTEN by Forcepoint or untrusted proxy!${NC}"
     echo "  Issuer: $issuer"
-  elif echo "$issuer" | grep -qi "$EXPECTED"; then
-    echo -e "  ${GREEN}✅ OK - Issuer is Amazon (${issuer})${NC}"
   else
-    echo -e "  ${YELLOW}❓ Unexpected issuer${NC}"
-    echo "  Issuer: $issuer"
+    for good in "${ALLOWED_ISSUERS[@]}"; do
+      if echo "$issuer" | grep -qi "$good"; then
+        matched_good=true
+        break
+      fi
+    done
+
+    if [ "$matched_good" = true ]; then
+      echo -e "  ${GREEN}✅ OK - Trusted issuer detected (${issuer})${NC}"
+    else
+      echo -e "  ${YELLOW}❓ Unexpected issuer${NC}"
+      echo "  Issuer: $issuer"
+    fi
   fi
 
   # Optional: show expiration date
