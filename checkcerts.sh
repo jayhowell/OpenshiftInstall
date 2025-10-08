@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# check_redhat_cert_chain.sh
-# Verify SSL certificate chains for critical Red Hat and Quay endpoints on port 443
-# Requires: openssl, timeout, grep, awk, sed
+# check_redhat_cert_issuer.sh
+# Verify that Red Hat and Quay endpoints present a certificate issued by Amazon, not Forcepoint
 #
-# Usage: ./check_redhat_cert_chain.sh
+# Usage: ./check_redhat_cert_issuer.sh
 #
 
-# List of hosts to check
 HOSTS=(
   "registry.redhat.io"
   "access.redhat.com"
@@ -27,20 +25,22 @@ HOSTS=(
   "console.redhat.com"
 )
 
+# Expected issuer keyword
+EXPECTED="Amazon"
+BAD_ISSUER="Forcepoint"
+
 # Colors
 GREEN="\033[1;32m"
 YELLOW="\033[1;33m"
 RED="\033[1;31m"
 NC="\033[0m"
 
-echo "🔍 Checking certificate chain for Red Hat and Quay endpoints..."
+echo "🔍 Checking SSL certificate issuers for Red Hat and Quay endpoints..."
 echo "-------------------------------------------------------------"
 echo ""
 
 for host in "${HOSTS[@]}"; do
   echo "🟢 Checking ${host}:443 ..."
-
-  # Use timeout to prevent hang
   output=$(timeout 10 openssl s_client -connect "${host}:443" -servername "${host}" -showcerts </dev/null 2>/dev/null)
 
   if [ $? -ne 0 ]; then
@@ -49,27 +49,26 @@ for host in "${HOSTS[@]}"; do
     continue
   fi
 
-  # Check if certificate chain is present
-  chain_count=$(echo "$output" | grep -c "BEGIN CERTIFICATE")
-  subject=$(echo "$output" | grep "subject=" | head -1 | sed 's/.*CN=//')
+  # Extract issuer CN
+  issuer=$(echo "$output" | grep "issuer=" | head -1 | sed 's/.*CN=//')
 
-  if [ "$chain_count" -lt 2 ]; then
-    echo -e "  ${YELLOW}⚠️  Certificate chain incomplete (${chain_count} certs)${NC}"
+  if echo "$issuer" | grep -qi "$BAD_ISSUER"; then
+    echo -e "  ${RED}⚠️  CERT REWRITTEN by Forcepoint!${NC}"
+    echo "  Issuer: $issuer"
+  elif echo "$issuer" | grep -qi "$EXPECTED"; then
+    echo -e "  ${GREEN}✅ OK - Issuer is Amazon (${issuer})${NC}"
   else
-    echo -e "  ${GREEN}✅ Certificate chain OK (${chain_count} certs)${NC}"
+    echo -e "  ${YELLOW}❓ Unexpected issuer${NC}"
+    echo "  Issuer: $issuer"
   fi
 
-  # Display CN and Issuer for first cert
-  issuer=$(echo "$output" | grep "issuer=" | head -1 | sed 's/.*CN=//')
-  echo "  Subject CN: $subject"
-  echo "  Issuer CN:  $issuer"
-
-  # Check expiration
-  expiry_date=$(echo "$output" | openssl x509 -noout -dates 2>/dev/null | grep notAfter | cut -d= -f2)
-  echo "  Expires: $expiry_date"
+  # Optional: show expiration date
+  expiry=$(echo "$output" | openssl x509 -noout -dates 2>/dev/null | grep notAfter | cut -d= -f2)
+  echo "  Expires: $expiry"
   echo ""
 done
 
 echo "-------------------------------------------------------------"
-echo "✅ Certificate verification complete."
+echo "✅ Certificate issuer verification complete."
 echo ""
+
