@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 
-# Assisted Installer Preflight Check Script
-# Run this from your bastion host before starting the Assisted Installer.
-# It checks DNS resolution and TCP port connectivity to cluster endpoints and nodes.
+# Assisted Installer Preflight Check Script (emoji + robust DNS)
+# Run from your bastion host before starting the Assisted Installer.
 
 # ------------------------------
 # CONFIGURATION
 # ------------------------------
-
-# Replace these with your environment details
 CLUSTER_DOMAIN="example.openshift.example.com"   # base domain for your cluster
 API_VIP="api.${CLUSTER_DOMAIN}"
 API_INT_VIP="api-int.${CLUSTER_DOMAIN}"
@@ -35,28 +32,75 @@ PORTS=(
 )
 
 # ------------------------------
+# OUTPUT STYLING
+# ------------------------------
+# Use color when possible; emojis always.
+if [ -t 1 ]; then
+  GREEN="\033[32m"; RED="\033[31m"; YELLOW="\033[33m"; RESET="\033[0m"
+else
+  GREEN=""; RED=""; YELLOW=""; RESET=""
+fi
+OK_ICON="✅"
+FAIL_ICON="❌"
+
+# ------------------------------
 # FUNCTIONS
 # ------------------------------
 
+# Resolve a hostname to an IP (prefers system NSS via getent; falls back to dig)
+resolve_host() {
+  local host="$1"
+  local ip=""
+
+  if command -v getent >/dev/null 2>&1; then
+    # getent returns non-zero if not found; first column is the IP
+    ip="$(getent hosts "$host" | awk '{print $1; exit}')"
+  fi
+
+  if [[ -z "$ip" ]] && command -v dig >/dev/null 2>&1; then
+    # Prefer A then AAAA; ensure we only accept IP-looking answers
+    ip="$(dig +short A "$host" | awk '/^[0-9.]+$/{print; exit}')"
+    if [[ -z "$ip" ]]; then
+      ip="$(dig +short AAAA "$host" | awk '/:/ {print; exit}')"
+    fi
+  fi
+
+  printf "%s" "$ip"
+}
+
 check_dns() {
-  local host=$1
-  echo -n "[DNS] Checking ${host}... "
-  if dig +short "${host}" >/dev/null; then
-    ip=$(dig +short "${host}" | tail -n1)
-    echo "OK (${ip})"
+  local host="$1"
+  printf "[DNS] Checking %s... " "$host"
+
+  local ip
+  ip="$(resolve_host "$host")"
+
+  if [[ -n "$ip" ]]; then
+    printf "${GREEN}%s OK${RESET} (%s)\n" "$OK_ICON" "$ip"
   else
-    echo "FAILED DNS check for ${host}"
+    printf "${RED}%s FAILED${RESET} to resolve %s\n" "$FAIL_ICON" "$host"
   fi
 }
 
 check_port() {
-  local host=$1
-  local port=$2
-  timeout 3 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" 2>/dev/null
-  if [ $? -eq 0 ]; then
-    echo "  [PORT ${port}] OPEN"
+  local host="$1"
+  local port="$2"
+
+  # Prefer nc if available for clearer semantics; fall back to /dev/tcp
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w3 "$host" "$port" >/dev/null 2>&1
+    rc=$?
   else
-    echo "  [PORT ${port}] for ${host} CLOSED or FILTERED"
+    timeout 3 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" >/dev/null 2>&1
+    rc=$?
+    # Map timeout(124) to failure
+    [[ $rc -eq 124 ]] && rc=1
+  fi
+
+  if [[ $rc -eq 0 ]]; then
+    printf "  ${GREEN}%s [PORT %s] OPEN${RESET}\n" "$OK_ICON" "$port"
+  else
+    printf "  ${RED}%s [PORT %s] CLOSED or FILTERED${RESET}\n" "$FAIL_ICON" "$port"
   fi
 }
 
@@ -98,3 +142,4 @@ done
 
 echo ""
 echo "Preflight check complete."
+
